@@ -22,8 +22,15 @@ except:
     
 def get_basic_vram_info():
     """🔍 Méthode basique avec PyTorch natif"""
+    import torch
+
+    #  CPU 환경에서 바로 리턴 
     if not torch.cuda.is_available():
-        return {"error": "CUDA not available"}
+        return {
+            "free_gb": 0.0,
+            "total_gb": 0.0,
+            "error": "CUDA not available"
+        }
     
     # Mémoire libre et totale (en bytes)
     free_memory, total_memory = torch.cuda.mem_get_info()
