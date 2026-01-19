@@ -4,7 +4,7 @@
 
 Official release of [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) for ComfyUI that enables high-quality video and image upscaling.
 
-Can run as **Multi-GPU standalone CLI** too, see [🖥️ Run as Standalone](#️-run-as-standalone-cli) section.
+Can run as **Multi-GPU standalone CLI** too, see [🖥️ Run as Standalone](#-run-as-standalone-cli) section.
 
 [![SeedVR2 v2.5 Deep Dive Tutorial](https://img.youtube.com/vi/MBtWYXq_r60/maxresdefault.jpg)](https://youtu.be/MBtWYXq_r60)
 
@@ -14,8 +14,8 @@ Can run as **Multi-GPU standalone CLI** too, see [🖥️ Run as Standalone](#�
 
 ## 📋 Quick Access
 
-- [🆙 Future Releases](#-future-releases)
-- [🚀 Updates](#-updates)
+- [🆙 Future Work](#-future-work)
+- [🚀 Release Notes](#-release-notes)
 - [🎯 Features](#-features)
 - [🔧 Requirements](#-requirements)
 - [📦 Installation](#-installation)
@@ -26,7 +26,7 @@ Can run as **Multi-GPU standalone CLI** too, see [🖥️ Run as Standalone](#�
 - [🙏 Credits](#-credits)
 - [📜 License](#-license)
 
-## 🆙 Future Releases
+## 🆙 Future Work
 
 We're actively working on improvements and new features. To stay informed:
 
@@ -34,7 +34,55 @@ We're actively working on improvements and new features. To stay informed:
 - **💬 Join the Community**: Learn from others, share your workflows, and get help in the [Discussions](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/discussions)
 - **🔮 Next Model Survey**: We're looking for community input on the next open-source super-powerful generic restoration model. Share your suggestions in [Issue #164](https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/issues/164)
 
-## 🚀 Updates
+## 🚀 Release Notes
+
+**2025.12.24 - Version 2.5.24**
+
+- **🍎 Fix: MPS memory leak regression** - Restored MPS cache clearing after VAE encode/decode operations that was accidentally removed during code cleanup in v2.5.23
+
+**2025.12.24 - Version 2.5.23**
+
+- **🔒 Security: Prevent code execution in model loading** - Added protection against malicious .pth files by restricting deserialization to tensors only
+- **🎥 Fix: FFmpeg video writer reliability** - Resolved ffmpeg process hanging issues by redirecting stderr and adding buffer flush, with improved error messages for debugging *(thanks [@thehhmdb](https://github.com/thehhmdb))*
+- **⚡ Fix: GGUF VAE model support** - Enabled automatic weight dequantization for convolution operations, making GGUF-quantized VAE models fully functional *(thanks [@naxci1](https://github.com/naxci1))*
+- **🛡️ Fix: VAE slicing edge cases** - Protected against division by zero crashes when using small split sizes with high temporal downsampling *(thanks [@naxci1](https://github.com/naxci1))*
+- **🎨 Fix: LAB color transfer precision** - Resolved dtype mismatch errors during video upscaling by ensuring consistent float types before matrix operations
+- **🔧 Fix: PyTorch 2.9+ compatibility** - Extended Conv3d memory workaround to all PyTorch 2.9+ versions, fixing 3x VRAM usage on newer PyTorch releases
+- **📦 Fix: Bitsandbytes compatibility** - Added ValueError exception handling for Intel Gaudi version detection failures on non-Gaudi systems
+- **🍎 MPS: Memory optimization** - Reduced memory usage during encode/decode operations on Apple Silicon *(thanks [@s-cerevisiae](https://github.com/s-cerevisiae))*
+
+
+**2025.12.13 - Version 2.5.22**
+
+- **🎬 CLI: FFmpeg video backend with 10-bit support** - New `--video_backend ffmpeg` and `--10bit` flags enable x265 encoding with 10-bit color depth, reducing banding artifacts in gradients compared to 8-bit OpenCV output *(based on PR by [@thehhmdb](https://github.com/thehhmdb) - thank you!)*
+- **🍎 Fix: MPS bicubic upscaling compatibility** - Added CPU fallback for bicubic+antialias interpolation on PyTorch versions before 2.8.0, resolving RGBA alpha upscaling errors on Apple Silicon
+- **⚡ Fix: Cross-platform histogram matching** - Replaced scatter_ operation with argsort+index_select for improved reliability across CUDA, ROCm, and MPS backends
+- **🧹 MPS: Remove sync overhead** - Reverted unnecessary `torch.mps.synchronize()` calls introduced in v2.5.21 for consistent behavior with CUDA pipeline
+
+**2025.12.12 - Version 2.5.21**
+
+- **🛠️ Fix: GGUF dequantization error on MPS** - Resolved shape mismatch error introduced in 2.5.20 by skipping GGUF quantized buffers in precision conversion - these must remain in packed format for on-the-fly dequantization during inference
+- **🍎 MPS: Eliminate CPU sync overhead** - Skip unnecessary CPU tensor offload on Apple Silicon unified memory architecture, preventing sync stalls that caused slowdowns. Input images and output video now stay on MPS device throughout the pipeline
+- **⚡ MPS: Preload text embeddings** - Load text embeddings before Phase 1 encoding to avoid sync stall at Phase 2 start, improving timing accuracy and throughput
+- **🧹 MPS: Optimized model cleanup** - Skip redundant CPU movement before model deletion on unified memory
+
+**2025.12.12 - Version 2.5.20**
+
+- **⚡ Expanded attention backends** - Full support for Flash Attention 2 (Ampere+), Flash Attention 3 (Hopper+), SageAttention 2, and SageAttention 3 (Blackwell/RTX 50xx), with automatic fallback chains to PyTorch SDPA when unavailable *(based on PR by [@naxci1](https://github.com/naxci1) - thank you!)*
+- **🍎 macOS/Apple Silicon compatibility** - Replaced MPS autocast with explicit dtype conversion throughout VAE and DiT pipelines, resolving hangs and crashes on M-series Macs. BlockSwap now auto-disables with warning (unified memory makes it meaningless)
+- **🛡️ Flash Attention graceful fallback** - Added compatibility shims for corrupted or partially installed flash_attn/xformers DLLs, preventing startup crashes
+- **🛡️ AMD ROCm: bitsandbytes conflict fix** - Prevent kernel registration errors when diffusers attempts to re-import broken bitsandbytes installations
+- **📦 ComfyUI Manager: macOS classifier fix** - Removed NVIDIA CUDA classifier causing false "GPU not supported" warnings on macOS
+- **📚 Documentation updates** - Updated README with attention backend details, BlockSwap macOS notes, and clarified model caching descriptions
+
+**2025.12.10 - Version 2.5.19**
+
+- **🎨 New header logo design** - Refreshed ASCII art banner *(thanks [@naxci1](https://github.com/naxci1))*
+- **🧹 Remove dead flash attention wrapper** - Removed legacy code from FP8CompatibleDiT; FlashAttentionVarlen already handles backend switching via its `attention_mode` attribute
+- **🛡️ Fix graceful fallback from flash-attn** - Add compatibility shims for corrupted flash_attn/xformers DLLs, preventing startup crashes when CUDA extensions are broken
+- **📊 Improved VRAM tracking** - Separate allocated vs reserved memory tracking, Windows-only overflow detection (WDDM paging behavior)
+- **♻️ Centralize backend detection** - Unified `is_mps_available()`, `is_cuda_available()`, `get_gpu_backend()` helpers across codebase
+- **🔄 Revert 2.5.14 VRAM limit enforcement** - Removed `set_per_process_memory_fraction` call; Overflow detection and warnings remain.
 
 **2025.12.09 - Version 2.5.18**
 
@@ -223,7 +271,7 @@ We're actively working on improvements and new features. To stay informed:
 
 **2025.07.03**
 
-- 🛠️ Can run as **standalone mode** with **Multi GPU** see [🖥️ Run as Standalone](#️-run-as-standalone-cli)
+- 🛠️ Can run as **standalone mode** with **Multi GPU** see [🖥️ Run as Standalone](#run-as-standalone-cli)
 
 **2025.06.30**
 
@@ -270,8 +318,8 @@ We're actively working on improvements and new features. To stay informed:
 ### Performance Features
 - **torch.compile Integration**: Optional 20-40% DiT speedup and 15-25% VAE speedup with PyTorch 2.0+ compilation
 - **Multi-GPU CLI**: Distribute workload across multiple GPUs with automatic temporal overlap blending
-- **Model Caching**: Keep models loaded in memory for faster batch processing
-- **Flexible Attention Backends**: Choose between PyTorch SDPA (stable, always available) or Flash Attention 2 (faster on supported hardware)
+- **Model Caching**: Keep models loaded between generations for single-GPU directory processing or multi-GPU streaming
+- **Flexible Attention Backends**: Choose between PyTorch SDPA (stable, always available), Flash Attention 2/3, or SageAttention 2/3 for faster computation on supported hardware
 
 ### Quality Control
 - **Advanced Color Correction**: Five methods including LAB (recommended for highest fidelity), wavelet, wavelet adaptive, HSV, and AdaIN
@@ -300,7 +348,7 @@ With the current optimizations (tiling, BlockSwap, GGUF quantization), SeedVR2 c
 - **Python**: 3.12+ (Python 3.12 and 3.13 tested and recommended)
 - **PyTorch**: 2.0+ for torch.compile support (optional but recommended)
 - **Triton**: Required for torch.compile with inductor backend (optional)
-- **Flash Attention 2**: Provides faster attention computation on supported hardware (optional, falls back to PyTorch SDPA)
+- **Flash Attention / SageAttention**: Flash Attention 2 (Ampere+), Flash Attention 3 (Hopper+), SageAttention 2 or SageAttention 3 (Blackwell) provide faster attention computation on supported hardware (optional, falls back to PyTorch SDPA)
 
 ## 📦 Installation
 
@@ -415,14 +463,21 @@ Configure the DiT (Diffusion Transformer) model for video upscaling.
   - Requires offload_device to be set and different from device
 
 - **attention_mode**: Attention computation backend
-  - `sdpa`: PyTorch scaled_dot_product_attention (default, stable, always available)
-  - `flash_attn`: Flash Attention 2 (faster on supported hardware, requires flash-attn package)
+  - `sdpa`: PyTorch scaled_dot_product_attention (default, always available)
+  - `flash_attn_2`: Flash Attention 2 (Ampere+, requires flash-attn package)
+  - `flash_attn_3`: Flash Attention 3 (Hopper+, requires flash-attn with FA3 support)
+  - `sageattn_2`: SageAttention 2 (requires sageattention package)
+  - `sageattn_3`: SageAttention 3 (Blackwell/RTX 50xx, requires sageattn3 package)
 
 - **torch_compile_args**: Connect to SeedVR2 Torch Compile Settings node for 20-40% speedup
 
 **BlockSwap Explained:**
 
-BlockSwap enables running large models on GPUs with limited VRAM by dynamically swapping transformer blocks between GPU and CPU memory during inference. Here's how it works:
+BlockSwap enables running large models on GPUs with limited VRAM by dynamically swapping transformer blocks between GPU and CPU memory during inference.
+
+> **Note:** BlockSwap is not available on macOS. Apple Silicon Macs use unified memory architecture where GPU and CPU share the same memory pool, making BlockSwap meaningless. The option will be automatically disabled with a warning if requested on macOS.
+
+Here's how it works:
 
 - **What it does**: Keeps only the currently-needed transformer blocks on the GPU, while storing the rest on CPU or another device
 - **When to use it**: When you get OOM (Out of Memory) errors during the upscaling phase
@@ -780,14 +835,16 @@ python inference_cli.py image.jpg
 # Basic video upscaling with temporal consistency
 python inference_cli.py video.mp4 --resolution 720 --batch_size 33
 
-# Streaming mode for long videos (memory-efficient)
+# Streaming mode for long videos (memory-efficient) with 10-bit video output (requires FFMPEG)
 # Processes video in chunks of 330 frames to avoid loading entire video into RAM
 # Use --temporal_overlap to ensure smooth transitions between chunks
 python inference_cli.py long_video.mp4 \
     --resolution 1080 \
     --batch_size 33 \
     --chunk_size 330 \
-    --temporal_overlap 3
+    --temporal_overlap 3 \
+    --video_backend ffmpeg \
+    --10bit
 
 # Multi-GPU processing with temporal overlap
 python inference_cli.py video.mp4 \
@@ -834,6 +891,8 @@ python inference_cli.py media_folder/ \
 - `<input>`: Input file (.mp4, .avi, .png, .jpg, etc.) or directory
 - `--output`: Output path (default: auto-generated in 'output/' directory)
 - `--output_format`: Output format: 'mp4' (video) or 'png' (image sequence). Default: auto-detect from input type
+- `--video_backend`: Video encoder backend: 'opencv' (default) or 'ffmpeg' (requires ffmpeg in PATH)
+- `--10bit`: Save 10-bit video with x265 codec and yuv420p10le pixel format (reduces banding in gradients). Without this flag, ffmpeg uses x264 (yuv420p) for maximum compatibility. Requires --video_backend ffmpeg
 - `--model_dir`: Model directory (default: ./models/SEEDVR2)
 
 **Model Selection:**
@@ -858,9 +917,8 @@ python inference_cli.py media_folder/ \
 **Memory Management:**
 - `--dit_offload_device`: Device to offload DiT model: 'none' (keep on GPU), 'cpu', or 'cuda:X' (default: none)
 - `--vae_offload_device`: Device to offload VAE model: 'none', 'cpu', or 'cuda:X' (default: none)
-- `--blocks_to_swap`: Number of transformer blocks to swap (0=disabled, 3B: 0-32, 7B: 0-36). Requires dit_offload_device (default: 0)
-- `--swap_io_components`: Offload I/O components for additional VRAM savings. Requires dit_offload_device
-- `--use_non_blocking`: Use non-blocking memory transfers for BlockSwap (recommended)
+- `--blocks_to_swap`: Number of transformer blocks to swap (0=disabled, 3B: 0-32, 7B: 0-36). Requires dit_offload_device (default: 0). Not available on macOS.
+- `--swap_io_components`: Offload I/O components for additional VRAM savings. Requires dit_offload_device. Not available on macOS.
 
 **VAE Tiling:**
 - `--vae_encode_tiled`: Enable VAE encode tiling to reduce VRAM during encoding
@@ -872,7 +930,8 @@ python inference_cli.py media_folder/ \
 - `--tile_debug`: Visualize tiles: 'false' (default), 'encode', or 'decode'
 
 **Performance Optimization:**
-- `--attention_mode`: Attention backend: 'sdpa' (default, stable) or 'flash_attn' (faster, requires package)
+- `--allow_vram_overflow`: Allow VRAM overflow to system RAM. Prevents OOM but may cause severe slowdown
+- `--attention_mode`: Attention backend: 'sdpa' (default), 'flash_attn_2' (Ampere+), 'flash_attn_3' (Hopper+), 'sageattn_2', or 'sageattn_3' (Blackwell)
 - `--compile_dit`: Enable torch.compile for DiT model (20-40% speedup, requires PyTorch 2.0+ and Triton)
 - `--compile_vae`: Enable torch.compile for VAE model (15-25% speedup, requires PyTorch 2.0+ and Triton)
 - `--compile_backend`: Compilation backend: 'inductor' (full optimization) or 'cudagraphs' (lightweight) (default: inductor)
@@ -883,8 +942,8 @@ python inference_cli.py media_folder/ \
 - `--compile_dynamo_recompile_limit`: Max recompilation attempts before fallback (default: 128)
 
 **Model Caching (batch processing):**
-- `--cache_dit`: Cache DiT model between files (single GPU only, speeds up directory processing)
-- `--cache_vae`: Cache VAE model between files (single GPU only, speeds up directory processing)
+- `--cache_dit`: Keep DiT model in memory between generations. Works with single-GPU directory processing or multi-GPU streaming (`--chunk_size`). Requires `--dit_offload_device`
+- `--cache_vae`: Keep VAE model in memory between generations. Works with single-GPU directory processing or multi-GPU streaming (`--chunk_size`). Requires `--vae_offload_device`
 
 **Multi-GPU:**
 - `--cuda_device`: CUDA device id(s). Single id (e.g., '0') or comma-separated list '0,1' for multi-GPU
@@ -987,7 +1046,7 @@ For detailed contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 This ComfyUI implementation is a collaborative project by **[NumZ](https://github.com/numz)** and **[AInVFX](https://www.youtube.com/@AInVFX)** (Adrien Toupet), based on the original [SeedVR2](https://github.com/ByteDance-Seed/SeedVR) by ByteDance Seed Team.
 
-Special thanks to our community contributors including [benjaminherb](https://github.com/benjaminherb), [cmeka](https://github.com/cmeka), [FurkanGozukara](https://github.com/FurkanGozukara), [JohnAlcatraz](https://github.com/JohnAlcatraz), [lihaoyun6](https://github.com/lihaoyun6), [Luchuanzhao](https://github.com/Luchuanzhao), [Luke2642](https://github.com/Luke2642), [naxci1](https://github.com/naxci1), [q5sys](https://github.com/q5sys), and many others for their improvements, bug fixes, and testing.
+Special thanks to our community contributors including [naxci1](https://github.com/naxci1), [thehhmdb](https://github.com/thehhmdb), [s-cerevisiae](https://github.com/s-cerevisiae), [benjaminherb](https://github.com/benjaminherb), [cmeka](https://github.com/cmeka), [FurkanGozukara](https://github.com/FurkanGozukara), [JohnAlcatraz](https://github.com/JohnAlcatraz), [lihaoyun6](https://github.com/lihaoyun6), [Luchuanzhao](https://github.com/Luchuanzhao), [Luke2642](https://github.com/Luke2642), [proxyid](https://github.com/proxyid), [q5sys](https://github.com/q5sys), and many others for their improvements, bug fixes, and testing.
 
 ## 📜 License
 

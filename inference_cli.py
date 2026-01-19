@@ -76,7 +76,7 @@ if platform.system() == "Darwin":
 else:
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
 
-    # Pre-parse CUDA device argument for validation and environment setup
+    # Pre-parse arguments that must be handled before torch import
     _pre_parser = argparse.ArgumentParser(add_help=False)
     _pre_parser.add_argument("--cuda_device", type=str, default=None)
     _pre_args, _ = _pre_parser.parse_known_args()
@@ -108,6 +108,8 @@ else:
 import torch
 import cv2
 import numpy as np
+import subprocess
+import shutil
 
 # Project imports
 from src.utils.downloads import download_weight
@@ -118,7 +120,9 @@ from src.core.generation_utils import (
     prepare_runner, 
     compute_generation_info, 
     log_generation_start,
-    blend_overlapping_frames
+    blend_overlapping_frames,
+    load_text_embeddings,
+    script_directory
 )
 from src.core.generation_phases import (
     encode_all_batches, 
@@ -127,23 +131,87 @@ from src.core.generation_phases import (
     postprocess_all_batches
 )
 from src.utils.debug import Debug
-from src.optimization.memory_manager import clear_memory
+from src.optimization.memory_manager import clear_memory, get_gpu_backend, is_cuda_available
 debug = Debug(enabled=False)  # Will be enabled via --debug CLI flag
+
+
+# =============================================================================
+# FFMPEG Class
+# =============================================================================
+
+class FFMPEGVideoWriter:
+    """
+    Video writer using ffmpeg subprocess for encoding with 10-bit support.
+    
+    Provides cv2.VideoWriter-compatible interface (write, isOpened, release) while
+    using ffmpeg for encoding. Enables 10-bit output (yuv420p10le with x265) which
+    reduces banding artifacts in gradients compared to 8-bit opencv output.
+    
+    Args:
+        path: Output video file path
+        width: Frame width in pixels
+        height: Frame height in pixels
+        fps: Frames per second
+        use_10bit: If True, uses x265 codec with yuv420p10le pixel format.
+                   If False, uses x264 with yuv420p (default: False)
+    
+    Raises:
+        RuntimeError: If ffmpeg is not found in system PATH
+    
+    Note:
+        Frames must be passed to write() in BGR format (same as cv2.VideoWriter).
+        Internally converts to RGB for ffmpeg rawvideo input.
+    """
+    
+    def __init__(self, path: str, width: int, height: int, fps: float, use_10bit: bool = False):
+        pix_fmt = 'yuv420p10le' if use_10bit else 'yuv420p'
+        codec = 'libx265' if use_10bit else 'libx264'
+        
+        self.proc = subprocess.Popen(
+            ['ffmpeg', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+             '-s', f'{width}x{height}', '-r', str(fps), '-i', '-',
+             '-c:v', codec, '-pix_fmt', pix_fmt, '-preset', 'medium', '-crf', '12', path],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+    
+    def write(self, frame_bgr: np.ndarray):
+        if not self.isOpened():
+            raise RuntimeError("FFMPEGVideoWriter: ffmpeg process is not running")
+        
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        try:
+            self.proc.stdin.write(frame_rgb.astype(np.uint8).tobytes())
+            self.proc.stdin.flush()  # Critical: prevent buffering issues
+        except BrokenPipeError:
+            raise RuntimeError(
+                "FFMPEGVideoWriter: ffmpeg process terminated unexpectedly. "
+                "Check video path, codec support, and disk space."
+            )
+    
+    def isOpened(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+    
+    def release(self):
+        if self.proc:
+            try:
+                self.proc.stdin.close()
+            except Exception:
+                pass  # Ignore errors on close
+            
+            self.proc.wait()
+            
+            if self.proc.returncode != 0:
+                debug.log(
+                    f"ffmpeg exited with code {self.proc.returncode}. "
+                    "Check output file for corruption.",
+                    level="WARNING", force=True, category="file"
+                )
+            self.proc = None
 
 
 # =============================================================================
 # Device Management Helpers
 # =============================================================================
-
-def _get_platform_type() -> str:
-    """Determine the platform device type (cuda/mps/cpu)."""
-    if platform.system() == "Darwin":
-        return "mps"
-    elif torch.cuda.is_available():
-        return "cuda"
-    else:
-        return "cpu"
-
 
 def _device_id_to_name(device_id: str, platform_type: str = None) -> str:
     """
@@ -160,7 +228,7 @@ def _device_id_to_name(device_id: str, platform_type: str = None) -> str:
         return device_id
     
     if platform_type is None:
-        platform_type = _get_platform_type()
+        platform_type = get_gpu_backend()
     
     # MPS typically doesn't use indices
     if platform_type == "mps":
@@ -456,7 +524,8 @@ def process_single_file(input_path: str, args: argparse.Namespace, device_list: 
             if is_png:
                 save_frames_to_image(result, output_path, base_name)
             else:
-                video_writer = save_frames_to_video(result, output_path, fps)
+                video_writer = save_frames_to_video(result, output_path, fps, 
+                    video_backend=args.video_backend, use_10bit=args.use_10bit)
                 if video_writer is not None:
                     video_writer.release()
             
@@ -484,7 +553,8 @@ def process_single_file(input_path: str, args: argparse.Namespace, device_list: 
                 if is_png:
                     save_frames_to_image(result, output_path, base_name, start_index=frames_written)
                 else:
-                    video_writer = save_frames_to_video(result, output_path, fps, writer=video_writer)
+                    video_writer = save_frames_to_video(result, output_path, fps, writer=video_writer,
+                        video_backend=args.video_backend, use_10bit=args.use_10bit)
                 
                 frames_written += result.shape[0]
                 del result
@@ -667,7 +737,9 @@ def save_frames_to_video(
     frames_tensor: torch.Tensor, 
     output_path: str, 
     fps: float = 30.0,
-    writer: Optional[cv2.VideoWriter] = None
+    writer: Optional[cv2.VideoWriter] = None,
+    video_backend: str = "opencv",
+    use_10bit: bool = False
 ) -> Optional[cv2.VideoWriter]:
     """
     Save frames tensor to MP4 video file.
@@ -692,10 +764,13 @@ def save_frames_to_video(
     T, H, W, C = frames_np.shape
     
     if writer is None:
-        debug.log(f"Saving {T} frames to video: {output_path}", category="file")
+        debug.log(f"Saving {T} frames to video: {output_path} (backend={video_backend})", category="file")
         os.makedirs(Path(output_path).parent, exist_ok=True)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
+        if video_backend == "ffmpeg":
+            writer = FFMPEGVideoWriter(output_path, W, H, fps, use_10bit)
+        else:
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            writer = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
         if not writer.isOpened():
             raise ValueError(f"Cannot create video writer for: {output_path}")
     
@@ -777,7 +852,7 @@ def _process_frames_core(
         Upscaled frames tensor [T', H', W', C], Float32, range [0,1]
     """    
     # Determine platform and convert device IDs to full names
-    platform_type = _get_platform_type()
+    platform_type = get_gpu_backend()
     inference_device = _device_id_to_name(device_id, platform_type)
     
     # Parse offload devices (with caching defaults)
@@ -868,6 +943,10 @@ def _process_frames_core(
     ctx['cache_context'] = cache_context
     if runner_cache is not None:
         runner_cache['runner'] = runner
+    
+    # Preload text embeddings before Phase 1 to avoid sync stall in Phase 2
+    ctx['text_embeds'] = load_text_embeddings(script_directory, ctx['dit_device'], ctx['compute_dtype'], debug)
+    debug.log("Loaded text embeddings for DiT", category="dit")
     
     # Compute generation info and log start (handles prepending internally)
     frames_tensor, gen_info = compute_generation_info(
@@ -1241,8 +1320,8 @@ Examples:
   Basic video upscaling with temporal consistency:
     python {invocation} video.mp4 --resolution 720 --batch_size 33
     
-  Streaming mode for long videos:
-    python {invocation} long_video.mp4 --resolution 1080 --batch_size 33 --chunk_size 330 --temporal_overlap 3
+  Streaming mode for long videos with 10-bit video output (requires FFMPEG):
+    python {invocation} long_video.mp4 --resolution 1080 --batch_size 33 --chunk_size 330 --temporal_overlap 3 --video_backend ffmpeg --10bit
 
   Multi-GPU processing with temporal overlap:
     python {invocation} video.mp4 --cuda_device 0,1 --resolution 1080 --batch_size 81 --uniform_batch_size --temporal_overlap 3 --prepend_frames 4 
@@ -1255,7 +1334,6 @@ Examples:
     
   Batch directory processing:
     python {invocation} media_folder/ --output processed/ --cuda_device 0 --cache_dit --cache_vae --dit_offload_device cpu --vae_offload_device cpu --resolution 1080 --max_resolution 1920
-
 """
     
     parser = argparse.ArgumentParser(
@@ -1273,6 +1351,11 @@ Examples:
                         help="Output path (default: auto-generated in 'output/' directory)")
     io_group.add_argument("--output_format", type=str, default=None, choices=["mp4", "png", None],
                         help="Output format: 'mp4' (video) or 'png' (image sequence). Default: auto-detect from input type")
+    io_group.add_argument("--video_backend", type=str, default="opencv", choices=["opencv", "ffmpeg"],
+                        help="Video encoder backend: 'opencv' (default) or 'ffmpeg' (requires ffmpeg in PATH)")
+    io_group.add_argument("--10bit", dest="use_10bit", action="store_true",
+                        help="Save 10-bit video with x265 codec (reduces banding). Without this flag, "
+                         "ffmpeg uses x264 for maximum compatibility. Requires --video_backend ffmpeg")
     io_group.add_argument("--model_dir", type=str, default=None,
                         help=f"Model directory (default: ./models/{SEEDVR2_FOLDER_NAME})")
     
@@ -1338,9 +1421,10 @@ Examples:
     blockswap_group = parser.add_argument_group('Memory optimization (BlockSwap)')
     blockswap_group.add_argument("--blocks_to_swap", type=int, default=0,
                         help="Transformer blocks to swap for VRAM savings. 0-32 (3B) or 0-36 (7B). "
-                             "Requires --dit_offload_device. Default: 0 (disabled)")
+                             "Requires --dit_offload_device. Not available on macOS. Default: 0 (disabled)")
     blockswap_group.add_argument("--swap_io_components", action="store_true",
-                        help="Offload DiT I/O layers for extra VRAM savings. Requires --dit_offload_device")
+                        help="Offload DiT I/O layers for extra VRAM savings. Requires --dit_offload_device. "
+                             "Not available on macOS")
     
     # VAE Tiling
     vae_group = parser.add_argument_group('VAE tiling (for high resolution upscale)')
@@ -1362,8 +1446,8 @@ Examples:
     # Performance
     perf_group = parser.add_argument_group('Performance optimization')
     perf_group.add_argument("--attention_mode", type=str, default="sdpa",
-                        choices=["sdpa", "flash_attn"],
-                        help="Attention backend: 'sdpa' (default, always available) or 'flash_attn' (faster, requires package)")
+                        choices=["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"],
+                        help="Attention backend: 'sdpa' (default), 'flash_attn_2', 'flash_attn_3', 'sageattn_2', or 'sageattn_3' (Blackwell GPUs)")
     perf_group.add_argument("--compile_dit", action="store_true", 
                         help="Enable torch.compile for DiT model (20-40%% speedup, requires PyTorch 2.0+ and Triton)")
     perf_group.add_argument("--compile_vae", action="store_true",
@@ -1385,9 +1469,11 @@ Examples:
     # Model Caching (for batch processing)
     cache_group = parser.add_argument_group('Model caching (batch processing)')
     cache_group.add_argument("--cache_dit", action="store_true",
-                        help="Cache DiT model between files (single GPU only, speeds up directory processing)")
+                        help="Keep DiT model in memory between generations. Works with single-GPU directory processing "
+                             "or multi-GPU streaming (--chunk_size). Requires --dit_offload_device")
     cache_group.add_argument("--cache_vae", action="store_true",
-                        help="Cache VAE model between files (single GPU only, speeds up directory processing)")
+                        help="Keep VAE model in memory between generations. Works with single-GPU directory processing "
+                             "or multi-GPU streaming (--chunk_size). Requires --vae_offload_device")
     
     # Debugging
     debug_group = parser.add_argument_group('Debugging')
@@ -1446,27 +1532,15 @@ def main() -> None:
         debug.log(f"VAE decode tile overlap ({args.vae_decode_tile_overlap}) must be smaller than tile size ({args.vae_decode_tile_size})", level="ERROR", category="vae", force=True)
         sys.exit(1)
     
-    # Validate BlockSwap configuration - either blocks_to_swap or swap_io_components requires dit_offload_device
-    blockswap_enabled = args.blocks_to_swap > 0 or args.swap_io_components
-    if blockswap_enabled and args.dit_offload_device == "none":
-        config_details = []
-        if args.blocks_to_swap > 0:
-            config_details.append(f"blocks_to_swap={args.blocks_to_swap}")
-        if args.swap_io_components:
-            config_details.append("swap_io_components=True")
-        
-        debug.log(
-            f"BlockSwap enabled ({', '.join(config_details)}) but dit_offload_device='none'. "
-            "BlockSwap requires dit_offload_device to be set (typically 'cpu'). "
-            "Either set --dit_offload_device cpu or disable BlockSwap "
-            "(--blocks_to_swap 0 and do not use --swap_io_components)",
-            level="ERROR", category="blockswap", force=True
-        )
+    # Validate ffmpeg availability if selected
+    if args.video_backend == "ffmpeg" and shutil.which("ffmpeg") is None:
+        debug.log("--video_backend ffmpeg requires ffmpeg in PATH. Install ffmpeg or use --video_backend opencv", 
+                 level="ERROR", category="setup", force=True)
         sys.exit(1)
     
     # Inform about caching defaults
     if args.cache_dit and args.dit_offload_device == "none":
-        offload_target = "system memory (CPU)" if _get_platform_type() != "mps" else "unified memory"
+        offload_target = "system memory (CPU)" if get_gpu_backend() != "mps" else "unified memory"
         debug.log(
             f"DiT caching enabled: Using default {offload_target} for offload. "
             "Set --dit_offload_device explicitly to use a different device.",
@@ -1474,7 +1548,7 @@ def main() -> None:
         )
     
     if args.cache_vae and args.vae_offload_device == "none":
-        offload_target = "system memory (CPU)" if _get_platform_type() != "mps" else "unified memory"
+        offload_target = "system memory (CPU)" if get_gpu_backend() != "mps" else "unified memory"
         debug.log(
             f"VAE caching enabled: Using default {offload_target} for offload. "
             "Set --vae_offload_device explicitly to use a different device.",
@@ -1487,7 +1561,7 @@ def main() -> None:
         else:
             # Show actual CUDA device visibility
             debug.log(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set (all)')}", category="device")
-            if torch.cuda.is_available():
+            if is_cuda_available():
                 debug.log(f"torch.cuda.device_count(): {torch.cuda.device_count()}", category="device")
                 debug.log(f"Using device index 0 inside script (mapped to selected GPU)", category="device")
     

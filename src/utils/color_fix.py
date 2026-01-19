@@ -381,6 +381,8 @@ def _rgb_to_lab_batch(rgb: Tensor, device: torch.device, matrix: Tensor, epsilon
     rgb_flat = rgb_linear.permute(0, 2, 3, 1).reshape(-1, 3)
     del rgb_linear
     
+    # Ensure dtype consistency for matrix multiplication
+    rgb_flat = rgb_flat.to(dtype=matrix.dtype)
     xyz_flat = torch.matmul(rgb_flat, matrix.T)
     del rgb_flat
     
@@ -452,6 +454,8 @@ def _lab_to_rgb_batch(lab: Tensor, device: torch.device, matrix_inv: Tensor, eps
     xyz_flat = xyz.permute(0, 2, 3, 1).reshape(-1, 3)
     del xyz
     
+    # Ensure dtype consistency for matrix multiplication
+    xyz_flat = xyz_flat.to(dtype=matrix_inv.dtype)
     rgb_linear_flat = torch.matmul(xyz_flat, matrix_inv.T)
     del xyz_flat
     
@@ -490,6 +494,7 @@ def _histogram_matching_channel(source: Tensor, reference: Tensor, device: torch
     # Sort both arrays
     source_sorted, source_indices = torch.sort(source_flat)
     reference_sorted, _ = torch.sort(reference_flat)
+    del reference_flat
     
     # Quantile mapping
     n_source = len(source_sorted)
@@ -503,12 +508,15 @@ def _histogram_matching_channel(source: Tensor, reference: Tensor, device: torch
         ref_indices = (source_quantiles * (n_reference - 1)).long()
         ref_indices.clamp_(0, n_reference - 1)
         matched_sorted = reference_sorted[ref_indices]
-        del source_quantiles, ref_indices
+        del source_quantiles, ref_indices, reference_sorted
     
-    # Reconstruct with matched values
-    matched_flat = torch.empty_like(source_flat)
-    matched_flat.scatter_(0, source_indices, matched_sorted)
-    del source_flat, reference_flat, source_sorted, source_indices, reference_sorted, matched_sorted
+    del source_sorted, source_flat
+    
+    # Reconstruct using argsort (portable across CUDA/ROCm/MPS)
+    inverse_indices = torch.argsort(source_indices)
+    del source_indices
+    matched_flat = matched_sorted[inverse_indices]
+    del matched_sorted, inverse_indices
     
     return matched_flat.reshape(original_shape)
 
@@ -748,11 +756,15 @@ def _histogram_match_1d(source: Tensor, reference: Tensor, device: torch.device)
         ref_indices = (source_quantiles * (n_reference - 1)).long()
         ref_indices.clamp_(0, n_reference - 1)
         matched_sorted = reference_sorted[ref_indices]
-        del source_quantiles, ref_indices
+        del source_quantiles, ref_indices, reference_sorted
     
-    matched = torch.empty_like(source)
-    matched.scatter_(0, source_indices, matched_sorted)
-    del source_sorted, source_indices, reference_sorted, matched_sorted
+    del source_sorted
+    
+    # Reconstruct using argsort (portable across CUDA/ROCm/MPS)
+    inverse_indices = torch.argsort(source_indices)
+    del source_indices
+    matched = matched_sorted[inverse_indices]
+    del matched_sorted, inverse_indices
     
     return matched
 
