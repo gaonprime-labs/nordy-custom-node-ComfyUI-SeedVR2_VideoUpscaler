@@ -614,7 +614,11 @@ def _check_conv3d_memory_bug():
             return False
         
         # Check device capability (NVIDIA GPUs)
-        if torch.cuda.get_device_capability()[0] < 3:
+        #! nordy - nordy cpu 인스턴스를 위한 수정, gpu가 없을경우에는 검사 안함
+        capability = torch.cuda.get_device_capability()
+        if not capability or capability[0] < 3:
+        #! nordy - original code    
+        # if torch.cuda.get_device_capability()[0] < 3:
             return False
         
         # Parse torch version
