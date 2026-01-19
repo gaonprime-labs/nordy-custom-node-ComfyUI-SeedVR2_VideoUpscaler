@@ -92,7 +92,7 @@ def get_device_list(include_none: bool = False, include_cpu: bool = False) -> Li
     result.extend(devs)
 
     #! nordy - Always return at least "cpu" to prevent index errors in node schemas
-    return result if result else ["cpu"]
+    return result if result else ["cuda:0"]
 
 
 def get_basic_vram_info(device: Optional[torch.device] = None) -> Dict[str, Any]:
